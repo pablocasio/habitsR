@@ -68,6 +68,15 @@ def init_db():
             herramienta_usada TEXT,
             timestamp TEXT DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS alertas_proactivas (
+            id_alerta INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_usuario TEXT NOT NULL REFERENCES usuarios(id_usuario),
+            tipo_riesgo TEXT NOT NULL,
+            mensaje TEXT NOT NULL,
+            fecha_generada TEXT DEFAULT CURRENT_TIMESTAMP,
+            vista INTEGER DEFAULT 0
+        );
         """
     )
     conn.commit()
@@ -114,5 +123,115 @@ def seed_demo_user(id_usuario="demo-pablo"):
         (id_usuario,),
     )
 
+    conn.commit()
+    conn.close()
+
+
+def seed_demo_user_en_riesgo(id_usuario="demo-riesgo"):
+    """
+    Segundo usuario demo, pero con una tendencia negativa que NO se recupera
+    (a diferencia de demo-pablo, que mejora hacia el final de la semana).
+    Sirve para probar que el job de proactividad SÍ dispara una alerta acá,
+    y NO la dispara para demo-pablo — así se ve que el agente no manda
+    alertas al voleo, solo cuando el patrón real lo justifica.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM usuarios WHERE id_usuario = ?", (id_usuario,))
+    if cur.fetchone():
+        conn.close()
+        return
+
+    cur.execute(
+        """INSERT INTO usuarios (id_usuario, nombre, genero, edad, rutina, dieta, objetivo)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (id_usuario, "Usuario en riesgo", "Femenino", 28, "Sedentario", "Vegetariano", "Salud general"),
+    )
+
+    # Cae y NO se recupera: los últimos 3 días son claramente peores que los 4 previos
+    patron_agua = [2.6, 2.5, 2.4, 1.8, 0.8, 0.6, 0.5]
+    patron_ejercicio = [30, 35, 25, 15, 0, 0, 0]
+    hoy = date.today()
+    for i in range(7):
+        dia = hoy - timedelta(days=6 - i)
+        cur.execute(
+            """INSERT OR IGNORE INTO registros_diarios
+               (id_usuario, fecha, agua_litros, comidas_realizadas, horas_sueno, minutos_ejercicio)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (id_usuario, dia.isoformat(), patron_agua[i], 3, 6.5, patron_ejercicio[i]),
+        )
+
+    cur.execute(
+        """INSERT INTO metas (id_usuario, tipo_meta, valor_objetivo, estado)
+           VALUES (?, 'agua', 2.5, 'activa')""",
+        (id_usuario,),
+    )
+    cur.execute(
+        """INSERT INTO metas (id_usuario, tipo_meta, valor_objetivo, estado)
+           VALUES (?, 'ejercicio', 30, 'activa')""",
+        (id_usuario,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def obtener_todos_los_usuarios() -> list[str]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id_usuario FROM usuarios")
+    ids = [r["id_usuario"] for r in cur.fetchall()]
+    conn.close()
+    return ids
+
+
+def existe_alerta_reciente(id_usuario: str, tipo_riesgo: str, horas: int = 24) -> bool:
+    """Evita espamear al usuario: no crea una alerta nueva del mismo tipo
+    si ya se generó una en las últimas `horas` horas."""
+    conn = get_connection()
+    cur = conn.cursor()
+    limite = (datetime.now() - timedelta(hours=horas)).isoformat()
+    cur.execute(
+        """SELECT 1 FROM alertas_proactivas
+           WHERE id_usuario = ? AND tipo_riesgo = ? AND fecha_generada >= ?""",
+        (id_usuario, tipo_riesgo, limite),
+    )
+    existe = cur.fetchone() is not None
+    conn.close()
+    return existe
+
+
+def guardar_alerta_proactiva(id_usuario: str, tipo_riesgo: str, mensaje: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO alertas_proactivas (id_usuario, tipo_riesgo, mensaje)
+           VALUES (?, ?, ?)""",
+        (id_usuario, tipo_riesgo, mensaje),
+    )
+    conn.commit()
+    conn.close()
+
+
+def obtener_alertas_no_vistas(id_usuario: str) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id_alerta, tipo_riesgo, mensaje, fecha_generada
+           FROM alertas_proactivas
+           WHERE id_usuario = ? AND vista = 0
+           ORDER BY fecha_generada ASC""",
+        (id_usuario,),
+    )
+    alertas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return alertas
+
+
+def marcar_alerta_vista(id_alerta: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE alertas_proactivas SET vista = 1 WHERE id_alerta = ?", (id_alerta,))
     conn.commit()
     conn.close()
