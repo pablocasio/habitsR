@@ -4,3 +4,5 @@ anthropic>=0.34
 pydantic>=2.6
 python-dotenv>=1.0
 apscheduler>=3.10
+scikit-learn>=1.4
+numpy>=1.26

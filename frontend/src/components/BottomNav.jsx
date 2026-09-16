@@ -1,6 +1,7 @@
 const tabs = [
   { key: "home", label: "Hoy", icon: HomeIcon },
   { key: "chat", label: "Agente", icon: ChatIcon },
+  { key: "foto", label: "Foto", icon: CameraIcon },
   { key: "progress", label: "Progreso", icon: ProgressIcon },
   { key: "profile", label: "Perfil", icon: ProfileIcon },
 ];
@@ -57,6 +58,21 @@ function ProgressIcon({ active }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
       <path d="M5 19V13M12 19V5M19 19V10" stroke={c} strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CameraIcon({ active }) {
+  const c = active ? "#B4FF3D" : "#5B6272";
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 8h3l1.5-2h7L17 8h3v11H4V8z"
+        stroke={c}
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="13" r="3" stroke={c} strokeWidth="1.8" />
     </svg>
   );
 }

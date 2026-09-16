@@ -19,9 +19,10 @@ from database import (
     guardar_alerta_proactiva,
     obtener_todos_los_usuarios,
 )
-from tools import analizar_patron_cumplimiento
+from ml_patrones import analizar_patron_ml
 
 MODEL = "claude-sonnet-4-5"
+MAX_TOKENS_PROACTIVO = 100  # bajado de 200: el mensaje proactivo debe ser corto por definición
 
 # Un prompt distinto al del chat normal: acá el agente no está
 # respondiendo una pregunta, está iniciando él la conversación.
@@ -30,9 +31,14 @@ MODEL = "claude-sonnet-4-5"
 SYSTEM_PROMPT_PROACTIVO = """Eres el agente de AgentSync. Vas a iniciar tú la conversación con
 el usuario porque detectaste un patrón preocupante en su historial de hábitos.
 
-Reglas:
-- No suenes a alarma ni a regaño. Sonás a alguien que se dio cuenta y se preocupa, no a un sistema de monitoreo.
-- Sé breve (2-3 líneas). Mencioná el dato concreto que detectaste.
+Personalidad: cálida, tierna y con humor liviano — sonás a una amiga que se
+dio cuenta y te escribe con cariño, no a un sistema de monitoreo.
+
+Reglas de formato (se lee en voz alta):
+- Sin markdown, sin asteriscos, sin emojis. Solo texto plano y natural.
+
+Reglas de contenido:
+- 1-2 oraciones, nada más. Mencioná el dato concreto que detectaste.
 - Terminá con una pregunta abierta o una sugerencia concreta, no con un signo de exclamación genérico.
 - No diagnostiques nada médico.
 """
@@ -47,7 +53,7 @@ def _generar_mensaje_proactivo(client: Anthropic, id_usuario: str, habito: str, 
     )
     response = client.messages.create(
         model=MODEL,
-        max_tokens=200,
+        max_tokens=MAX_TOKENS_PROACTIVO,
         system=SYSTEM_PROMPT_PROACTIVO,
         messages=[{"role": "user", "content": prompt_usuario}],
     )
@@ -69,7 +75,7 @@ def revisar_patrones_y_notificar():
 
     for id_usuario in obtener_todos_los_usuarios():
         for habito in HABITOS_A_VIGILAR:
-            analisis = analizar_patron_cumplimiento(habito=habito, id_usuario=id_usuario)
+            analisis = analizar_patron_ml(id_usuario=id_usuario, habito=habito)
 
             if not analisis.get("suficientes_datos", True):
                 continue
