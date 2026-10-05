@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import RingCluster from "../components/RingCluster";
+import BarrasNutricionales from "../components/BarrasNutricionales";
 
 const API_URL = "http://localhost:8000";
 
@@ -13,11 +14,25 @@ export default function Dashboard({ user, onIrARegistro }) {
   const [recomendacion, setRecomendacion] = useState(null);
   const [cargandoRecomendacion, setCargandoRecomendacion] = useState(false);
   const [errorConexion, setErrorConexion] = useState(false);
+  const [resumenNutricional, setResumenNutricional] = useState(null);
+  const [metasNutricionales, setMetasNutricionales] = useState(null);
 
   useEffect(() => {
     cargarResumen();
     cargarRecomendacion(false);
+    cargarNutricion();
   }, []);
+
+  async function cargarNutricion() {
+    try {
+      const res = await fetch(`${API_URL}/api/nutricion/resumen-hoy/${idUsuarioActual()}`);
+      const data = await res.json();
+      setResumenNutricional(data.consumido);
+      setMetasNutricionales(data.metas);
+    } catch {
+      // sin conexión, la barra se queda vacía — no bloquea el resto del dashboard
+    }
+  }
 
   async function cargarResumen() {
     const idUsuario = idUsuarioActual();
@@ -29,7 +44,7 @@ export default function Dashboard({ user, onIrARegistro }) {
       const resumen = await resResumen.json();
       const perfilData = await resPerfil.json();
 
-      const hoy = new Date().toISOString().slice(0, 10);
+      const hoy = new Date().toLocaleDateString("en-CA"); // formato YYYY-MM-DD en hora LOCAL, no UTC
       const registroHoy = resumen.registros?.find((r) => r.fecha === hoy) || {};
 
       const metaAgua = resumen.metas_activas?.find((m) => m.tipo_meta === "agua")?.valor_objetivo ?? 2.5;
@@ -77,6 +92,10 @@ export default function Dashboard({ user, onIrARegistro }) {
 
   return (
     <div className="px-6 pt-14 pb-28 max-w-md mx-auto">
+      <div className="mb-5 animate-rise">
+        <BarrasNutricionales resumen={resumenNutricional} metas={metasNutricionales} titulo="Meta diaria" />
+      </div>
+
       <div className="animate-rise">
         <div className="flex items-center justify-between">
           <div>

@@ -21,9 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent import AgentSyncAgent
+from auth import hashear_password, verificar_password
 from database import (
+    crear_cuenta,
+    guardar_analisis_foto_comida,
     guardar_perfil_usuario,
     guardar_registro_diario,
+    incrementar_registro_diario,
     init_db,
     marcar_alerta_vista,
     marcar_recomendacion_aplicada,
@@ -32,10 +36,13 @@ from database import (
     obtener_perfil_usuario,
     obtener_recomendaciones_recientes,
     obtener_registro_hoy,
+    obtener_resumen_nutricional_hoy,
+    obtener_usuario_por_username,
     seed_demo_user,
     seed_demo_user_en_riesgo,
 )
 from ml_patrones import analizar_patron_ml
+from nutricion import calcular_metas_nutricionales
 from proactive import revisar_patrones_y_notificar
 from recommendations import generar_recomendaciones
 from tools import consultar_historial, consultar_metas_activas
@@ -143,6 +150,95 @@ def perfil_usuario(id_usuario: str):
     return {"existe": True, "perfil": perfil}
 
 
+class EditarPerfilRequest(BaseModel):
+    nombre: str
+    genero: str
+    edad: int
+    rutina: str
+    dieta: str
+    objetivo: str
+    peso: float | None = None
+    altura: float | None = None
+    horas_sueno_objetivo: float = 8
+    alergias: str | None = None
+    nivel_estres: int | None = None
+    horario_ejercicio: str | None = None
+    tipo_ejercicio: str | None = None
+    experiencia_ejercicio: str | None = None
+    comidas_por_dia: int = 3
+    intensidad_ejercicio_min: int = 30
+
+
+@app.put("/api/usuarios/{id_usuario}/perfil")
+def editar_perfil(id_usuario: str, req: EditarPerfilRequest):
+    """Edita el perfil de un usuario que ya existe — usado desde la
+    pantalla de Perfil. Nunca toca username ni password."""
+    if obtener_perfil_usuario(id_usuario) is None:
+        return {"ok": False, "error": "Usuario no encontrado"}
+
+    guardar_perfil_usuario(id_usuario=id_usuario, **req.model_dump())
+    perfil_actualizado = obtener_perfil_usuario(id_usuario)
+    return {"ok": True, "perfil": perfil_actualizado}
+
+
+# ───────────── Autenticación: registro + login ─────────────
+
+class RegistroCuentaRequest(BaseModel):
+    username: str
+    password: str
+    nombre: str
+    genero: str | None = None
+    edad: int | None = None
+    rutina: str | None = None
+    dieta: str | None = None
+    objetivo: str | None = None
+    peso: float | None = None
+    altura: float | None = None
+    horas_sueno_objetivo: float = 8
+    alergias: str | None = None
+    nivel_estres: int | None = None
+    horario_ejercicio: str | None = None
+    tipo_ejercicio: str | None = None
+    experiencia_ejercicio: str | None = None
+    comidas_por_dia: int = 3
+    intensidad_ejercicio_min: int = 30
+
+
+@app.post("/api/auth/registro")
+def registro(req: RegistroCuentaRequest):
+    if len(req.password) < 4:
+        return {"ok": False, "error": "La contraseña debe tener al menos 4 caracteres"}
+
+    datos = req.model_dump(exclude={"password"})
+    datos["password_hash"] = hashear_password(req.password)
+
+    try:
+        crear_cuenta(**datos)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    perfil = obtener_perfil_usuario(req.username)
+    return {"ok": True, "id_usuario": req.username, "perfil": perfil}
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    usuario = obtener_usuario_por_username(req.username)
+    if usuario is None or not usuario.get("password_hash"):
+        return {"ok": False, "error": "Usuario o contraseña incorrectos"}
+
+    if not verificar_password(req.password, usuario["password_hash"]):
+        return {"ok": False, "error": "Usuario o contraseña incorrectos"}
+
+    perfil = obtener_perfil_usuario(req.username)
+    return {"ok": True, "id_usuario": req.username, "perfil": perfil}
+
+
 # ───────────── Registro diario manual (agua, ejercicio, sueño, comidas) ─────────────
 
 class RegistroDiarioRequest(BaseModel):
@@ -164,6 +260,23 @@ def registrar_hoy(req: RegistroDiarioRequest):
 @app.get("/api/registros/hoy/{id_usuario}")
 def registro_de_hoy(id_usuario: str):
     return obtener_registro_hoy(id_usuario)
+
+
+class IncrementoRequest(BaseModel):
+    id_usuario: str
+    campo: str  # "agua_litros" | "minutos_ejercicio" | "comidas_realizadas"
+    delta: float
+
+
+@app.post("/api/registros/incrementar")
+def incrementar(req: IncrementoRequest):
+    """Suma (o resta, con delta negativo) al valor de hoy — pensado
+    para agua/ejercicio/comidas, que se acumulan durante el día."""
+    try:
+        resultado = incrementar_registro_diario(req.id_usuario, req.campo, req.delta)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"ok": True, "registro": resultado}
 
 
 # ───────────── RF-01: Recomendaciones (salida JSON estructurada) ─────────────
@@ -201,23 +314,68 @@ def predicciones(id_usuario: str):
     }
 
 
-# ───────────── Visión: foto de comida → calorías/macros ─────────────
+# ───────────── Visión: foto de comida → calorías/macros (flujo en 2 pasos) ─────────────
 
-class FotoComidaRequest(BaseModel):
+class AnalizarFotoRequest(BaseModel):
     id_usuario: str
     imagen_base64: str
     media_type: str = "image/jpeg"
 
 
-@app.post("/api/comida/foto")
-def foto_comida(req: FotoComidaRequest):
+@app.post("/api/comida/foto/analizar")
+def analizar_foto(req: AnalizarFotoRequest):
+    """Paso 1: analiza la foto pero NO la guarda todavía — el usuario
+    puede corregir el tipo de comida antes de que cuente para el día."""
     analisis = analizar_foto_comida(req.id_usuario, req.imagen_base64, req.media_type)
     return {"analisis": analisis}
+
+
+class GuardarFotoRequest(BaseModel):
+    id_usuario: str
+    nombre_plato: str
+    tipo_comida: str
+    calorias_estimadas: float
+    proteinas_g: float
+    carbohidratos_g: float
+    grasas_g: float
+    comentario_metas: str | None = None
+
+
+@app.post("/api/comida/foto/guardar")
+def guardar_foto(req: GuardarFotoRequest):
+    """Paso 2: recién ahora se guarda y se suma al resumen del día."""
+    analisis = req.model_dump(exclude={"id_usuario"})
+    guardar_analisis_foto_comida(req.id_usuario, analisis)
+    resumen = obtener_resumen_nutricional_hoy(req.id_usuario)
+    metas = calcular_metas_nutricionales(obtener_perfil_usuario(req.id_usuario) or {})
+    return {"ok": True, "resumen_hoy": resumen, "metas": metas}
 
 
 @app.get("/api/comida/fotos/{id_usuario}")
 def fotos_comida(id_usuario: str):
     return {"fotos": obtener_fotos_comida_recientes(id_usuario)}
+
+
+# ───────────── Nutrición: metas calculadas + resumen diario ─────────────
+
+@app.get("/api/nutricion/metas/{id_usuario}")
+def metas_nutricionales(id_usuario: str):
+    perfil = obtener_perfil_usuario(id_usuario)
+    if perfil is None:
+        return {"metas": None, "error": "Usuario no encontrado"}
+    metas = calcular_metas_nutricionales(perfil)
+    if metas is None:
+        return {"metas": None, "error": "Faltan peso, altura o edad en tu perfil"}
+    return {"metas": metas}
+
+
+@app.get("/api/nutricion/resumen-hoy/{id_usuario}")
+def resumen_nutricional_hoy(id_usuario: str):
+    resumen = obtener_resumen_nutricional_hoy(id_usuario)
+    perfil = obtener_perfil_usuario(id_usuario) or {}
+    metas = calcular_metas_nutricionales(perfil)
+    return {"consumido": resumen, "metas": metas}
+
 
 
 @app.get("/api/alertas/{id_usuario}")

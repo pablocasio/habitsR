@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from database import (
     existe_alerta_reciente,
     guardar_alerta_proactiva,
+    obtener_perfil_usuario,
     obtener_todos_los_usuarios,
 )
 from ml_patrones import analizar_patron_ml
@@ -47,9 +48,13 @@ HABITOS_A_VIGILAR = ["agua", "ejercicio"]
 
 
 def _generar_mensaje_proactivo(client: Anthropic, id_usuario: str, habito: str, analisis: dict) -> str:
+    perfil = obtener_perfil_usuario(id_usuario) or {}
+    nombre = perfil.get("nombre", "el usuario")
+
     prompt_usuario = (
-        f"Detecté esto en el historial del usuario (id: {id_usuario}) para el hábito '{habito}': "
-        f"{analisis}. Escribí el mensaje con el que le vas a escribir vos, iniciando la conversación."
+        f"El usuario se llama {nombre}. Detecté esto en su historial para el hábito '{habito}': "
+        f"{analisis}. Escribí el mensaje con el que le vas a escribir vos, iniciando la conversación, "
+        f"llamándolo por su nombre de forma natural."
     )
     response = client.messages.create(
         model=MODEL,

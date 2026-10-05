@@ -19,6 +19,7 @@ import os
 
 from anthropic import Anthropic
 
+from database import obtener_perfil_usuario
 from tools import TOOLS, execute_tool
 
 MODEL = "claude-sonnet-4-5"  # cambiar según el modelo disponible en tu cuenta
@@ -52,6 +53,32 @@ class AgentSyncAgent:
     def __init__(self, api_key: str | None = None):
         self.client = Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
+    def _construir_system_prompt(self, id_usuario: str) -> str:
+        """
+        El nombre, edad, dieta y alergias del usuario NO deberían
+        costar una llamada a herramienta cada vez — son datos que casi
+        no cambian, así que los inyectamos directo en el system prompt
+        de cada turno. Lo que SÍ va detrás de una herramienta es lo que
+        cambia seguido: historial diario, metas activas, patrones.
+
+        Esto es lo que hace que el agente "ya te conozca" sin que tengas
+        que decirle tu nombre cada vez que abrís el chat.
+        """
+        perfil = obtener_perfil_usuario(id_usuario)
+        if not perfil:
+            return SYSTEM_PROMPT
+
+        contexto_usuario = (
+            f"\n\nDatos conocidos de este usuario (no se los vuelvas a preguntar):\n"
+            f"- Nombre: {perfil['nombre']}\n"
+            f"- Edad: {perfil.get('edad', 'no especificada')}\n"
+            f"- Dieta: {perfil.get('dieta', 'no especificada')}\n"
+            f"- Objetivo: {perfil.get('objetivo', 'no especificado')}\n"
+            f"- Alergias/restricciones: {perfil.get('alergias') or 'ninguna registrada'}\n"
+            f"Llamalo por su nombre de forma natural, no en cada mensaje."
+        )
+        return SYSTEM_PROMPT + contexto_usuario
+
     def responder(self, id_usuario: str, mensaje_usuario: str, historial_conversacion: list[dict] | None = None) -> dict:
         """
         Ejecuta un turno completo del agente: puede llamar 0, 1 o varias
@@ -61,6 +88,7 @@ class AgentSyncAgent:
         para que el frontend pueda, si quiere, mostrar qué hizo el agente
         (transparencia — bueno para la sustentación del examen).
         """
+        system_prompt = self._construir_system_prompt(id_usuario)
         messages = list(historial_conversacion or [])
         messages.append({"role": "user", "content": mensaje_usuario})
 
@@ -72,7 +100,7 @@ class AgentSyncAgent:
             response = self.client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS_RESPUESTA,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=TOOLS,
                 messages=messages,
             )
